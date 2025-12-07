@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>i.hyper.rgb - GRASS GIS manual</title>
+<meta charset="utf-8">
+</head>
+<body>
+
+<h2>DESCRIPTION</h2>
+
+<p><em>i.hyper.rgb</em> creates RGB or CMYK composites from hyperspectral imagery
+imported as 3D raster maps (<code>raster_3d</code>) by
+<a href="i.hyper.import.html">i.hyper.import</a>.</p>
+
+<p>The module reads wavelength metadata from hyperspectral 3D raster bands
+and automatically selects the bands closest to specified target
+wavelengths for each color channel. Users can choose between RGB
+(red-green-blue) and CMYK (cyan-magenta-yellow-key) color spaces.</p>
+
+<p><em>i.hyper.rgb</em> is part of the <b>i.hyper</b> module family designed for
+hyperspectral data import, processing, and analysis in GRASS. It
+complements <a href="i.hyper.composite.html">i.hyper.composite</a> by providing
+color space conversions with advanced statistical band selection and
+accessibility features.</p>
+
+<p>The module offers multiple statistical methods for band selection when
+multiple bands fall within the target wavelength range:</p>
+
+<ul>
+  <li><b>mean</b> — Average of candidate bands</li>
+  <li><b>median</b> — Median value of candidate bands</li>
+  <li><b>mode</b> — Most frequent value of candidate bands</li>
+  <li><b>min</b> — Minimum value of candidate bands</li>
+  <li><b>max</b> — Maximum value of candidate bands</li>
+  <li><b>sd1_pos, sd2_pos, sd3_pos</b> — Mean plus 1, 2, or 3 standard deviations</li>
+  <li><b>sd1_neg, sd2_neg, sd3_neg</b> — Mean minus 1, 2, or 3 standard deviations</li>
+</ul>
+
+<p>Color blind safe palette adjustments are available for protanopia
+(red-blind), deuteranopia (green-blind), and tritanopia (blue-blind)
+vision deficiencies, improving accessibility of hyperspectral
+visualizations.</p>
+
+<p>The resulting output consists of individual raster maps for each color
+channel (e.g., <code>output_red</code>, <code>output_green</code>, <code>output_blue</code>) organized
+into an image group (<code>output_rgb</code> or <code>output_cmyk</code>) for convenient
+display and further processing.</p>
+
+<h2>NOTES</h2>
+
+<p>The module expects input data to be a 3D raster map created by
+<em>i.hyper.import</em> or any 3D raster with wavelength metadata stored in
+band-level metadata following the <em>i.hyper</em> standard format:
+<b>wavelength</b>, <b>FWHM</b>, <b>valid</b>, and <b>unit</b>.</p>
+
+<p>When wavelength metadata is not found, the module falls back to using
+band indices as wavelength values, which may produce unexpected results.
+It is recommended to use properly imported hyperspectral data.</p>
+
+<p>The <b>-n</b> flag normalizes output bands to the 0-255 range, suitable for
+8-bit display formats. Without normalization, output bands retain their
+original reflectance or radiance values.</p>
+
+<p>Default wavelengths are chosen to match typical RGB color perception:</p>
+
+<ul>
+  <li><b>Red</b>: 650 nm</li>
+  <li><b>Green</b>: 550 nm</li>
+  <li><b>Blue</b>: 450 nm</li>
+</ul>
+
+<p>For CMYK composites:</p>
+
+<ul>
+  <li><b>Cyan</b>: 490 nm</li>
+  <li><b>Magenta</b>: 580 nm</li>
+  <li><b>Yellow</b>: 570 nm</li>
+  <li><b>Key (black)</b>: 800 nm (near-infrared for contrast)</li>
+</ul>
+
+<p>These defaults can be customized using the wavelength options to match
+specific sensor characteristics or visualization needs.</p>
+
+<p>Color blind adjustments apply transformation matrices to the output
+channels, simulating how the composite would appear to individuals with
+different types of color vision deficiency. This feature helps ensure
+that visualizations convey information effectively to all viewers.</p>
+
+<h2>EXAMPLES</h2>
+
+<div class="code"><pre>
+# Create a standard RGB composite from PRISMA data
+i.hyper.rgb input=prisma \
+            output=prisma_composite \
+            colorspace=rgb \
+            statistic=mean
+
+# Result: prisma_composite_red, prisma_composite_green, prisma_composite_blue
+# Image group: prisma_composite_rgb
+</pre></div>
+
+<div class="code"><pre>
+# Create a normalized RGB composite suitable for display
+i.hyper.rgb input=enmap \
+            output=enmap_display \
+            colorspace=rgb \
+            statistic=mean \
+            -n
+
+# Display the composite
+d.rgb red=enmap_display_red \
+      green=enmap_display_green \
+      blue=enmap_display_blue
+</pre></div>
+
+<div class="code"><pre>
+# Create a deuteranopia-adjusted RGB composite
+# Useful for ensuring visualization accessibility
+i.hyper.rgb input=tanager \
+            output=tanager_colorblind \
+            colorspace=rgb \
+            statistic=median \
+            colorblind=deuteranopia \
+            -n
+</pre></div>
+
+<div class="code"><pre>
+# Create CMYK composite with custom wavelengths
+i.hyper.rgb input=prisma \
+            output=prisma_cmyk \
+            colorspace=cmyk \
+            cyan_wavelength=480 \
+            magenta_wavelength=590 \
+            yellow_wavelength=560 \
+            key_wavelength=850 \
+            statistic=mean
+</pre></div>
+
+<div class="code"><pre>
+# Use standard deviation for enhanced contrast
+i.hyper.rgb input=enmap \
+            output=enmap_enhanced \
+            colorspace=rgb \
+            statistic=sd2_pos \
+            red_wavelength=660 \
+            green_wavelength=560 \
+            blue_wavelength=470 \
+            -n
+</pre></div>
+
+<div class="code"><pre>
+# Create multiple versions for comparison
+# Standard RGB
+i.hyper.rgb input=hyperspectral output=standard colorspace=rgb -n
+
+# Protanopia-adjusted
+i.hyper.rgb input=hyperspectral output=protanopia colorspace=rgb \
+            colorblind=protanopia -n
+
+# Tritanopia-adjusted
+i.hyper.rgb input=hyperspectral output=tritanopia colorspace=rgb \
+            colorblind=tritanopia -n
+</pre></div>
+
+<h2>SEE ALSO</h2>
+
+<a href="i.hyper.import.html">i.hyper.import</a>,
+<a href="i.hyper.composite.html">i.hyper.composite</a>,
+<a href="i.hyper.preproc.html">i.hyper.preproc</a>,
+<a href="i.hyper.explore.html">i.hyper.explore</a>,
+<a href="i.hyper.export.html">i.hyper.export</a>,
+<a href="https://grass.osgeo.org/grass-stable/manuals/d.rgb.html">d.rgb</a>,
+<a href="https://grass.osgeo.org/grass-stable/manuals/i.group.html">i.group</a>,
+<a href="https://grass.osgeo.org/grass-stable/manuals/r3.support.html">r3.support</a>,
+<a href="https://grass.osgeo.org/grass-stable/manuals/r.rescale.html">r.rescale</a>
+
+<h2>REFERENCES</h2>
+
+<ul>
+  <li>Viénot, F., Brettel, H., &amp; Mollon, J. D. (1999). Digital video
+    colourmaps for checking the legibility of displays by dichromats.
+    <em>Color Research &amp; Application</em>, 24(4), 243-252.</li>
+  <li>Machado, G. M., Oliveira, M. M., &amp; Fernandes, L. A. (2009). A
+    physiologically-based model for simulation of color vision deficiency.
+    <em>IEEE Transactions on Visualization and Computer Graphics</em>, 15(6),
+    1291-1298.</li>
+</ul>
+
+<h2>AUTHORS</h2>
+
+<p>Created for the i.hyper module family</p>
+
+<p>Based on work by Alen Mangafić and Tomaž Žagar, Geodetic Institute of Slovenia</p>
+
+</body>
+</html>
