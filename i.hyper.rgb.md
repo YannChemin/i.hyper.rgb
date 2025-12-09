@@ -18,14 +18,14 @@ accessibility features.
 The module offers multiple statistical methods for band selection when
 multiple bands fall within the target wavelength range:
 
-- **mean** -- Average of candidate bands
-- **median** -- Median value of candidate bands
-- **mode** -- Most frequent value of candidate bands
-- **min** -- Minimum value of candidate bands
-- **max** -- Maximum value of candidate bands
-- **sd1_pos, sd2_pos, sd3_pos** -- Mean plus 1, 2, or 3 standard
+- **mean** : Average of candidate bands
+- **median** : Median value of candidate bands
+- **mode** : Most frequent value of candidate bands
+- **min** : Minimum value of candidate bands
+- **max** : Maximum value of candidate bands
+- **sd1_pos, sd2_pos, sd3_pos** : Mean plus 1, 2, or 3 standard
   deviations
-- **sd1_neg, sd2_neg, sd3_neg** -- Mean minus 1, 2, or 3 standard
+- **sd1_neg, sd2_neg, sd3_neg** : Mean minus 1, 2, or 3 standard
   deviations
 
 Color blind safe palette adjustments are available for protanopia
