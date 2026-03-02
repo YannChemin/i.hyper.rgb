@@ -129,50 +129,68 @@
 # %end
 
 import sys
+import re
 import grass.script as gs
 import numpy as np
 
 
-def get_raster3d_info(raster3d):
-    """Get information about 3D raster including band wavelengths"""
-    try:
-        info = gs.raster3d_info(raster3d)
-        return info
-    except Exception as e:
-        gs.fatal(f"Cannot get info for 3D raster {raster3d}: {e}")
-
-
 def get_band_wavelengths(raster3d):
-    """Extract wavelength metadata from 3D raster bands"""
-    info = get_raster3d_info(raster3d)
-    depths = int(info['depths'])
+    """Extract wavelength metadata from Raster3D history via r3.info -h.
+
+    Parses lines of the form 'Band N: WL nm' written by i.hyper.atcorr
+    and i.hyper.import into the map's history file.
+    """
+    try:
+        header = gs.read_command('r3.info', map=raster3d, flags='h')
+    except Exception as e:
+        gs.fatal(f"Cannot read r3.info for {raster3d}: {e}")
+
     wavelengths = {}
-    
-    gs.verbose(f"Scanning {depths} bands for wavelength metadata...")
-    
-    for i in range(1, depths + 1):
-        band_name = f"{raster3d}#{i}"
-        try:
-            # Try to get wavelength from band metadata
-            metadata = gs.read_command('r.support', map=band_name, flags='n')
-            # Parse for wavelength info (adjust based on actual metadata format)
-            for line in metadata.split('\n'):
-                if 'wavelength' in line.lower():
-                    # Extract wavelength value
-                    parts = line.split('=')
-                    if len(parts) == 2:
-                        wl = float(parts[1].strip())
-                        wavelengths[wl] = i
-                        break
-        except:
-            # If metadata reading fails, try to infer from band name
-            pass
-    
+    for line in header.splitlines():
+        m = re.match(r'\s*Band\s+(\d+):\s+([\d.]+)\s*nm', line)
+        if m:
+            band_num = int(m.group(1))
+            wl_nm = float(m.group(2))
+            wavelengths[wl_nm] = band_num
+
     if not wavelengths:
-        gs.warning("No wavelength metadata found. Using band numbers as wavelengths.")
+        gs.warning("No wavelength metadata found in r3.info -h. "
+                   "Using band numbers as wavelengths.")
+        info = gs.parse_command('r3.info', map=raster3d, flags='g')
+        depths = int(info['depths'])
         wavelengths = {float(i): i for i in range(1, depths + 1)}
-    
+
     return wavelengths
+
+
+def extract_band_to_raster(raster3d, band_idx, output_name):
+    """Extract depth slice band_idx (1-based from bottom) to a 2D raster.
+
+    Temporarily constrains the 3D computational region to a single depth
+    level, runs r3.to.rast, then restores the original region.
+    """
+    region = gs.parse_command('g.region', flags='3g')
+    b_orig = float(region['b'])
+    t_orig = float(region['t'])
+    tbres  = float(region['tbres'])
+
+    slice_b = b_orig + (band_idx - 1) * tbres
+    slice_t = b_orig + band_idx * tbres
+
+    temp = gs.tempname(12)
+    gs.run_command('g.region', b=slice_b, t=slice_t, tbres=tbres)
+    try:
+        gs.run_command('r3.to.rast', input=raster3d, output=temp,
+                       type='DCELL', overwrite=True, quiet=True)
+        # r3.to.rast names the single slice temp_00001
+        gs.run_command('g.rename', raster=f"{temp}_00001,{output_name}",
+                       overwrite=True, quiet=True)
+    finally:
+        gs.run_command('g.region', b=b_orig, t=t_orig, tbres=tbres)
+
+    # Clean up any leftover temp slices
+    gs.run_command('g.remove', type='raster', pattern=f"{temp}_*",
+                   flags='f', quiet=True)
 
 
 def find_closest_band(target_wavelength, wavelengths):
@@ -274,24 +292,22 @@ def create_rgb_composite(options, flags):
     
     for color, band in channels.items():
         output_map = f"{output_base}_{color}"
-        input_band = f"{input_raster}#{band}"
-        
+
         gs.message(f"Creating {color} channel: {output_map}")
-        
-        # Copy the band
-        gs.run_command('g.copy', raster=f"{input_band},{output_map}", quiet=True)
-        
+
+        extract_band_to_raster(input_raster, band, output_map)
+
         # Normalize if requested
         if normalize:
             gs.run_command('r.rescale', input=output_map, output=output_map,
                           to='0,255', overwrite=True, quiet=True)
-        
+
         output_maps.append(output_map)
-    
+
     # Apply colorblind adjustments if requested
     if colorblind != 'none':
         apply_colorblind_adjustment(output_maps, colorblind)
-    
+
     # Create image group
     group_name = f"{output_base}_rgb"
     gs.run_command('i.group', group=group_name, subgroup=group_name,
@@ -339,20 +355,18 @@ def create_cmyk_composite(options, flags):
     
     for color, band in channels.items():
         output_map = f"{output_base}_{color}"
-        input_band = f"{input_raster}#{band}"
-        
+
         gs.message(f"Creating {color} channel: {output_map}")
-        
-        # Copy the band
-        gs.run_command('g.copy', raster=f"{input_band},{output_map}", quiet=True)
-        
+
+        extract_band_to_raster(input_raster, band, output_map)
+
         # Normalize if requested
         if normalize:
             gs.run_command('r.rescale', input=output_map, output=output_map,
                           to='0,255', overwrite=True, quiet=True)
-        
+
         output_maps.append(output_map)
-    
+
     # Create image group
     group_name = f"{output_base}_cmyk"
     gs.run_command('i.group', group=group_name, subgroup=group_name,
