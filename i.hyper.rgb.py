@@ -129,9 +129,66 @@
 # %end
 
 import sys
+import os
 import re
+import ctypes
 import grass.script as gs
 import numpy as np
+
+
+# ---------------------------------------------------------------------------
+# Fast Z-slice extraction via Rast3d_extract_z_slice() (ctypes)
+# ---------------------------------------------------------------------------
+
+_raster3d_lib = None
+
+
+def _load_raster3d_lib():
+    """Load libgrass_raster3d and its deps via ctypes (once per process)."""
+    global _raster3d_lib
+    if _raster3d_lib is not None:
+        return _raster3d_lib
+
+    gisbase = os.environ["GISBASE"]
+    libdir = os.path.join(gisbase, "lib")
+
+    for name in ("libgrass_gis.so", "libgrass_raster.so"):
+        ctypes.CDLL(os.path.join(libdir, name), ctypes.RTLD_GLOBAL)
+
+    lib = ctypes.CDLL(
+        os.path.join(libdir, "libgrass_raster3d.so"), ctypes.RTLD_GLOBAL
+    )
+    lib.Rast3d_extract_z_slice.restype = ctypes.c_int
+    lib.Rast3d_extract_z_slice.argtypes = [
+        ctypes.c_char_p,  # name3d
+        ctypes.c_char_p,  # mapset3d ("" = search)
+        ctypes.c_int,     # z  (0-based)
+        ctypes.c_char_p,  # name2d
+    ]
+
+    libgis = ctypes.CDLL(os.path.join(libdir, "libgrass_gis.so"))
+    libgis.G_gisinit(b"i.hyper.rgb")
+
+    _raster3d_lib = lib
+    return lib
+
+
+def extract_z_slice(name3d, band_num_1based, name2d):
+    """Extract one band (1-based) from a 3D raster to a 2D raster.
+
+    Uses Rast3d_extract_z_slice() which opens the map with RASTER3D_NO_CACHE
+    and calls Rast3d_get_block() for tile-bulk reads — each tile is loaded
+    exactly once instead of spawning r3.to.rast per band.
+    """
+    lib = _load_raster3d_lib()
+    z = band_num_1based - 1  # convert 1-based band to 0-based z index
+    ret = lib.Rast3d_extract_z_slice(
+        name3d.encode(), b"", ctypes.c_int(z), name2d.encode()
+    )
+    if ret != 0:
+        gs.fatal(
+            f"Rast3d_extract_z_slice failed for band {band_num_1based} of {name3d}"
+        )
 
 
 def get_band_wavelengths(raster3d):
@@ -161,36 +218,6 @@ def get_band_wavelengths(raster3d):
         wavelengths = {float(i): i for i in range(1, depths + 1)}
 
     return wavelengths
-
-
-def extract_band_to_raster(raster3d, band_idx, output_name):
-    """Extract depth slice band_idx (1-based from bottom) to a 2D raster.
-
-    Temporarily constrains the 3D computational region to a single depth
-    level, runs r3.to.rast, then restores the original region.
-    """
-    region = gs.parse_command('g.region', flags='3g')
-    b_orig = float(region['b'])
-    t_orig = float(region['t'])
-    tbres  = float(region['tbres'])
-
-    slice_b = b_orig + (band_idx - 1) * tbres
-    slice_t = b_orig + band_idx * tbres
-
-    temp = gs.tempname(12)
-    gs.run_command('g.region', b=slice_b, t=slice_t, tbres=tbres)
-    try:
-        gs.run_command('r3.to.rast', input=raster3d, output=temp,
-                       type='DCELL', overwrite=True, quiet=True)
-        # r3.to.rast names the single slice temp_00001
-        gs.run_command('g.rename', raster=f"{temp}_00001,{output_name}",
-                       overwrite=True, quiet=True)
-    finally:
-        gs.run_command('g.region', b=b_orig, t=t_orig, tbres=tbres)
-
-    # Clean up any leftover temp slices
-    gs.run_command('g.remove', type='raster', pattern=f"{temp}_*",
-                   flags='f', quiet=True)
 
 
 def find_closest_band(target_wavelength, wavelengths):
@@ -295,7 +322,7 @@ def create_rgb_composite(options, flags):
 
         gs.message(f"Creating {color} channel: {output_map}")
 
-        extract_band_to_raster(input_raster, band, output_map)
+        extract_z_slice(input_raster, band, output_map)
 
         # Normalize if requested
         if normalize:
@@ -358,7 +385,7 @@ def create_cmyk_composite(options, flags):
 
         gs.message(f"Creating {color} channel: {output_map}")
 
-        extract_band_to_raster(input_raster, band, output_map)
+        extract_z_slice(input_raster, band, output_map)
 
         # Normalize if requested
         if normalize:

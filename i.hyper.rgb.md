@@ -40,6 +40,13 @@ display and further processing.
 
 ## NOTES
 
+Band extraction uses `Rast3d_extract_z_slice()` from `libgrass_raster3d`,
+called via ctypes. The 3D map is opened with `RASTER3D_NO_CACHE`, which
+forces `Rast3d_get_block()` into the tile-bulk path: all tiles at the
+target depth level are read in a single pass, each exactly once, instead
+of spawning *r3.to.rast* and manipulating the computational region for
+every channel.
+
 The module expects input data to be a 3D raster map created by
 *i.hyper.import* or any 3D raster with wavelength metadata stored in
 band-level metadata following the *i.hyper* standard format:
