@@ -1,4 +1,17 @@
 #!/usr/bin/env python
+# ── ras3d standalone detection ────────────────────────────────────────────────
+import os as _os
+_RAS3D = False
+if not _os.environ.get('GISBASE'):
+    try:
+        import importlib.util as _ilu
+        if _ilu.find_spec('ras3d') and _ilu.find_spec('ras3d_grass_shim'):
+            from ras3d_grass_shim import install as _r3_install
+            _r3_install()
+            _RAS3D = True
+    except Exception:
+        pass
+# ─────────────────────────────────────────────────────────────────────────────
 ##############################################################################
 # MODULE:    i.hyper.rgb
 # AUTHOR(S): Created for hyperspectral RGB/CMYK composite generation
@@ -180,6 +193,15 @@ def extract_z_slice(name3d, band_num_1based, name2d):
     and calls Rast3d_get_block() for tile-bulk reads — each tile is loaded
     exactly once instead of spawning r3.to.rast per band.
     """
+    if _RAS3D:
+        import ras3d as _r3, ras3d_write as _r3w
+        _h = _r3.open_cube(name3d)
+        _arr = _r3.get_band(_h, band_num_1based - 1)
+        from ras3d_grass_shim import get_band_cache
+        get_band_cache()[name2d] = _arr
+        _r3w.write_raster2d(_r3w.outpath(name2d), _arr, _h)
+        _r3.close_cube(_h)
+        return
     lib = _load_raster3d_lib()
     z = band_num_1based - 1  # convert 1-based band to 0-based z index
     ret = lib.Rast3d_extract_z_slice(
@@ -197,6 +219,19 @@ def get_band_wavelengths(raster3d):
     Parses lines of the form 'Band N: WL nm' written by i.hyper.atcorr
     and i.hyper.import into the map's history file.
     """
+    if _RAS3D:
+        import json as _json
+        for _sfx in ('', '.tif', '.tiff', '.h5', '.hdf5'):
+            _base = raster3d.removesuffix(_sfx) if raster3d.endswith(_sfx) else raster3d
+            _wlp = _base + '.wl.json'
+            if _os.path.exists(_wlp):
+                with open(_wlp) as _f:
+                    _wl = _json.load(_f)
+                _wl_nm = [w * 1000 if w < 10 else w for w in _wl]
+                return {float(wl): i + 1 for i, wl in enumerate(_wl_nm)}
+        import ras3d as _r3
+        _h = _r3.open_cube(raster3d); _r = _r3.get_region(_h); _r3.close_cube(_h)
+        return {float(i): i for i in range(1, _r['depths'] + 1)}
     try:
         header = gs.read_command('r3.info', map=raster3d, flags='h')
     except Exception as e:
