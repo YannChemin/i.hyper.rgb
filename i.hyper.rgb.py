@@ -213,12 +213,45 @@ def extract_z_slice(name3d, band_num_1based, name2d):
         )
 
 
+def _load_hyper_json_wavelengths(raster3d):
+    """Read band-centre wavelengths (nm) from i.hyper.import's JSON sidecar.
+
+    i.hyper.import (HyperMetadata) stores band metadata at
+    $MAPSET/grid3/<mapname>/hyper.json rather than in r3.support history,
+    so that must be checked before falling back to r3.info history.
+    """
+    import json as _json
+
+    name, mapset = (raster3d.split('@', 1) if '@' in raster3d
+                     else (raster3d, None))
+    try:
+        env = gs.gisenv()
+        mapset = mapset or env['MAPSET']
+        path = os.path.join(env['GISDBASE'], env['LOCATION_NAME'], mapset,
+                            'grid3', name, 'hyper.json')
+    except Exception:
+        return None
+
+    if not os.path.isfile(path):
+        return None
+
+    with open(path) as _fj:
+        data = _json.load(_fj)
+
+    wavelengths = (data.get('bands') or {}).get('wavelength')
+    return [float(w) for w in wavelengths] if wavelengths else None
+
+
 def get_band_wavelengths(raster3d):
     """Extract wavelength metadata from Raster3D history via r3.info -h.
 
     Parses lines of the form 'Band N: WL nm' written by i.hyper.atcorr
     and i.hyper.import into the map's history file.
     """
+    json_wl = _load_hyper_json_wavelengths(raster3d)
+    if json_wl:
+        return {float(wl): i + 1 for i, wl in enumerate(json_wl)}
+
     if _RAS3D:
         import json as _json
         for _sfx in ('', '.tif', '.tiff', '.h5', '.hdf5'):
