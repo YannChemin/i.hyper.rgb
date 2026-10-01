@@ -50,43 +50,63 @@ def test_get_band_geotiff():
     ras3d.close_cube(h)
 
 
+def load_module():
+    """i.hyper.rgb.py as a module, in libras3d mode (no GISBASE)."""
+    import importlib.util
+    install_ras3d_shim()
+    os.environ.pop('GISBASE', None)
+    path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'i.hyper.rgb.py')
+    spec = importlib.util.spec_from_file_location('i_hyper_rgb', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.RAS3D
+    return module
+
+
 @skip_without_ras3d
 @skip_without_wyvern
-def test_extract_z_slice_writes_geotiff(tmp_path):
-    """extract_z_slice() in ras3d mode writes a GeoTIFF and populates the cache."""
-    install_ras3d_shim()
+def test_composite_writes_geotiff(tmp_path):
+    """In libras3d mode, the RGB channels are written as GeoTIFF files to
+    $RAS3D_OUTDIR, each the band nearest to its wavelength."""
+    import ras3d
+    module = load_module()
     os.environ['RAS3D_OUTDIR'] = str(tmp_path)
-
-    sys.path.insert(0, '/home/yann/dev/i.hyper.rgb')
-    import importlib, i_hyper_rgb
-    importlib.invalidate_caches()
-
-    # Directly call the module's extract_z_slice in ras3d mode
-    from i_hyper_rgb import extract_z_slice as _ext   # noqa: F401 — import side-effect test
-    slice_name = 'test_rgb_band1'
-    _ext(WYVERN_PATH, 1, slice_name)
-
-    from ras3d_grass_shim import get_band_cache
-    assert slice_name in get_band_cache()
-    arr = get_band_cache()[slice_name]
-    assert_band_valid(arr, 'extract_z_slice band 1')
-
-    out = tmp_path / (slice_name + '.tif')
-    assert out.exists(), f"Expected {out} to be written"
+    h, r = open_cube_checked(WYVERN_PATH)
+    sidecar, wl_list = make_wl_sidecar(WYVERN_PATH, r['depths'])
+    ras3d.close_cube(h)
+    try:
+        options = {
+            'input': WYVERN_PATH, 'output': 'rgbtest', 'colorspace': 'rgb',
+            'bandwidth': '0', 'statistic': 'mean', 'colorblind': 'none',
+            'red_wavelength': '600', 'green_wavelength': '500',
+            'blue_wavelength': '400',
+        }
+        module.main(options, {'n': False})
+    finally:
+        os.unlink(sidecar)
+    for channel in ('red', 'green', 'blue'):
+        out = tmp_path / f'rgbtest_{channel}.tif'
+        assert out.exists(), f"Expected {out} to be written"
+    backend = module.Ras3dBackend(WYVERN_PATH)
+    assert_band_valid(backend.band(0), 'band 1')
+    backend.cleanup()
 
 
 @skip_without_ras3d
 @skip_without_wyvern
 def test_wavelength_sidecar(tmp_path):
-    """get_band_wavelengths() reads the .wl.json sidecar in ras3d mode."""
-    install_ras3d_shim()
+    """The libras3d backend reads the .wl.json sidecar."""
     import ras3d
+    module = load_module()
     h, r = open_cube_checked(WYVERN_PATH)
     sidecar, wl_list = make_wl_sidecar(WYVERN_PATH, r['depths'])
     ras3d.close_cube(h)
-
-    sys.path.insert(0, '/home/yann/dev/i.hyper.rgb')
-    from i_hyper_rgb import get_band_wavelengths
-    wl_dict = get_band_wavelengths(WYVERN_PATH)
-    assert len(wl_dict) == r['depths']
-    os.unlink(sidecar)
+    try:
+        backend = module.Ras3dBackend(WYVERN_PATH)
+        waves, depths = backend.wavelengths()
+        backend.cleanup()
+    finally:
+        os.unlink(sidecar)
+    assert len(waves) == r['depths']
+    assert list(waves) == wl_list
+    assert depths == list(range(r['depths']))

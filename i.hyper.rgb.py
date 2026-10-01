@@ -1,27 +1,18 @@
-#!/usr/bin/env python
-# ── ras3d standalone detection ────────────────────────────────────────────────
-import os as _os
-_RAS3D = False
-if not _os.environ.get('GISBASE'):
-    try:
-        import importlib.util as _ilu
-        if _ilu.find_spec('ras3d') and _ilu.find_spec('ras3d_grass_shim'):
-            from ras3d_grass_shim import install as _r3_install
-            _r3_install()
-            _RAS3D = True
-    except Exception:
-        pass
-# ─────────────────────────────────────────────────────────────────────────────
+#!/usr/bin/env python3
+
 ##############################################################################
 # MODULE:    i.hyper.rgb
-# AUTHOR(S): Created for hyperspectral RGB/CMYK composite generation
-# PURPOSE:   Create RGB/CMYK composites from hyperspectral imagery
+# AUTHOR(S): Yann Chemin, after i.hyper.composite by Alen Mangafic and
+#            Tomaz Zagar (Geodetic Institute of Slovenia)
+# PURPOSE:   Create RGB or CMYK composites from a hyperspectral 3D raster,
+#            each channel the nearest band to its wavelength or a statistic
+#            of the bands around it.
 # COPYRIGHT: (C) 2025 by the GRASS Development Team
 # SPDX-License-Identifier: GPL-2.0-or-later
 ##############################################################################
 
 # %module
-# % description: Create RGB/CMYK composites from hyperspectral imagery with statistical band selection
+# % description: Creates RGB or CMYK composites from a hyperspectral 3D raster map.
 # % keyword: imagery
 # % keyword: hyperspectral
 # % keyword: composite
@@ -29,8 +20,7 @@ if not _os.environ.get('GISBASE'):
 
 # %option G_OPT_R3_INPUT
 # % key: input
-# % required: yes
-# % description: Input hyperspectral 3D raster map (from i.hyper.import)
+# % description: Input hyperspectral 3D raster map (with i.hyper metadata)
 # % guisection: Input
 # %end
 
@@ -38,455 +28,474 @@ if not _os.environ.get('GISBASE'):
 # % key: output
 # % type: string
 # % required: yes
-# % description: Base name for output image group (will append _rgb or _cmyk)
+# % description: Base name of the channel maps (<output>_red, ...) and of the image group (<output>_rgb or <output>_cmyk)
 # % guisection: Output
 # %end
 
 # %option
 # % key: colorspace
 # % type: string
-# % required: yes
 # % options: rgb,cmyk
 # % answer: rgb
-# % description: Output color space
+# % description: Output colour space
 # % guisection: Output
+# %end
+
+# %option
+# % key: bandwidth
+# % type: double
+# % answer: 0
+# % description: Width (nm) of the window of bands around each channel's wavelength; 0 for the nearest band only
+# % guisection: Processing
 # %end
 
 # %option
 # % key: statistic
 # % type: string
-# % required: no
 # % options: mean,median,mode,min,max,sd1_pos,sd2_pos,sd3_pos,sd1_neg,sd2_neg,sd3_neg
 # % answer: mean
-# % description: Statistical method for wavelength band selection
+# % description: Statistic of the bands within bandwidth combined into a channel
+# % descriptions: mean;mean;median;median;mode;most frequent value;min;minimum;max;maximum;sd1_pos;mean plus one standard deviation;sd2_pos;mean plus two standard deviations;sd3_pos;mean plus three standard deviations;sd1_neg;mean minus one standard deviation;sd2_neg;mean minus two standard deviations;sd3_neg;mean minus three standard deviations
 # % guisection: Processing
 # %end
 
 # %option
 # % key: colorblind
 # % type: string
-# % required: no
 # % options: none,protanopia,deuteranopia,tritanopia
 # % answer: none
-# % description: Color blind safe palette adjustment
+# % description: Mix the RGB channels with a dichromacy simulation matrix (the composite as seen with that colour vision deficiency)
 # % guisection: Accessibility
 # %end
 
 # %option
 # % key: red_wavelength
 # % type: double
-# % required: no
 # % answer: 650
-# % description: Target wavelength for red channel (nm)
+# % description: Wavelength of the red channel (nm)
 # % guisection: Wavelengths
 # %end
 
 # %option
 # % key: green_wavelength
 # % type: double
-# % required: no
 # % answer: 550
-# % description: Target wavelength for green channel (nm)
+# % description: Wavelength of the green channel (nm)
 # % guisection: Wavelengths
 # %end
 
 # %option
 # % key: blue_wavelength
 # % type: double
-# % required: no
 # % answer: 450
-# % description: Target wavelength for blue channel (nm)
+# % description: Wavelength of the blue channel (nm)
 # % guisection: Wavelengths
 # %end
 
 # %option
 # % key: cyan_wavelength
 # % type: double
-# % required: no
 # % answer: 490
-# % description: Target wavelength for cyan channel (nm) - CMYK only
+# % description: Wavelength of the cyan channel (nm), CMYK only
 # % guisection: Wavelengths
 # %end
 
 # %option
 # % key: magenta_wavelength
 # % type: double
-# % required: no
 # % answer: 580
-# % description: Target wavelength for magenta channel (nm) - CMYK only
+# % description: Wavelength of the magenta channel (nm), CMYK only
 # % guisection: Wavelengths
 # %end
 
 # %option
 # % key: yellow_wavelength
 # % type: double
-# % required: no
 # % answer: 570
-# % description: Target wavelength for yellow channel (nm) - CMYK only
+# % description: Wavelength of the yellow channel (nm), CMYK only
 # % guisection: Wavelengths
 # %end
 
 # %option
 # % key: key_wavelength
 # % type: double
-# % required: no
 # % answer: 800
-# % description: Target wavelength for key/black channel (nm) - CMYK only
+# % description: Wavelength of the key (black) channel (nm), CMYK only
 # % guisection: Wavelengths
 # %end
 
 # %flag
 # % key: n
-# % description: Normalize output bands to 0-255
+# % description: Rescale each channel linearly to 0-255
 # % guisection: Processing
 # %end
 
-import sys
+import builtins
+import importlib.util
+import json
 import os
-import re
-import ctypes
-import grass.script as gs
+import sys
+import uuid
+
 import numpy as np
 
-
-# ---------------------------------------------------------------------------
-# Fast Z-slice extraction via Rast3d_extract_z_slice() (ctypes)
-# ---------------------------------------------------------------------------
-
-_raster3d_lib = None
-
-
-def _load_raster3d_lib():
-    """Load libgrass_raster3d and its deps via ctypes (once per process)."""
-    global _raster3d_lib
-    if _raster3d_lib is not None:
-        return _raster3d_lib
-
-    gisbase = os.environ["GISBASE"]
-    libdir = os.path.join(gisbase, "lib")
-
-    for name in ("libgrass_gis.so", "libgrass_raster.so"):
-        ctypes.CDLL(os.path.join(libdir, name), ctypes.RTLD_GLOBAL)
-
-    lib = ctypes.CDLL(
-        os.path.join(libdir, "libgrass_raster3d.so"), ctypes.RTLD_GLOBAL
-    )
-    lib.Rast3d_extract_z_slice.restype = ctypes.c_int
-    lib.Rast3d_extract_z_slice.argtypes = [
-        ctypes.c_char_p,  # name3d
-        ctypes.c_char_p,  # mapset3d ("" = search)
-        ctypes.c_int,     # z  (0-based)
-        ctypes.c_char_p,  # name2d
-    ]
-
-    libgis = ctypes.CDLL(os.path.join(libdir, "libgrass_gis.so"))
-    libgis.G_gisinit(b"i.hyper.rgb")
-
-    _raster3d_lib = lib
-    return lib
-
-
-def extract_z_slice(name3d, band_num_1based, name2d):
-    """Extract one band (1-based) from a 3D raster to a 2D raster.
-
-    Uses Rast3d_extract_z_slice() which opens the map with RASTER3D_NO_CACHE
-    and calls Rast3d_get_block() for tile-bulk reads — each tile is loaded
-    exactly once instead of spawning r3.to.rast per band.
-    """
-    if _RAS3D:
-        import ras3d as _r3, ras3d_write as _r3w
-        _h = _r3.open_cube(name3d)
-        _arr = _r3.get_band(_h, band_num_1based - 1)
-        from ras3d_grass_shim import get_band_cache
-        get_band_cache()[name2d] = _arr
-        _r3w.write_raster2d(_r3w.outpath(name2d), _arr, _h)
-        _r3.close_cube(_h)
-        return
-    lib = _load_raster3d_lib()
-    z = band_num_1based - 1  # convert 1-based band to 0-based z index
-    ret = lib.Rast3d_extract_z_slice(
-        name3d.encode(), b"", ctypes.c_int(z), name2d.encode()
-    )
-    if ret != 0:
-        gs.fatal(
-            f"Rast3d_extract_z_slice failed for band {band_num_1based} of {name3d}"
-        )
-
-
-def _load_hyper_json_wavelengths(raster3d):
-    """Read band-centre wavelengths (nm) from i.hyper.import's JSON sidecar.
-
-    i.hyper.import (HyperMetadata) stores band metadata at
-    $MAPSET/grid3/<mapname>/hyper.json rather than in r3.support history,
-    so that must be checked before falling back to r3.info history.
-    """
-    import json as _json
-
-    name, mapset = (raster3d.split('@', 1) if '@' in raster3d
-                     else (raster3d, None))
+# Without GRASS, run on files through libras3d when it is installed: its
+# shim stands in for grass.script.
+RAS3D = False
+if not os.environ.get("GISBASE"):
     try:
-        env = gs.gisenv()
-        mapset = mapset or env['MAPSET']
-        path = os.path.join(env['GISDBASE'], env['LOCATION_NAME'], mapset,
-                            'grid3', name, 'hyper.json')
-    except Exception:
-        return None
+        if importlib.util.find_spec("ras3d") and importlib.util.find_spec(
+            "ras3d_grass_shim"
+        ):
+            from ras3d_grass_shim import install as _ras3d_install
 
-    if not os.path.isfile(path):
-        return None
+            _ras3d_install()
+            RAS3D = True
+    except ImportError:
+        pass
 
-    with open(path) as _fj:
-        data = _json.load(_fj)
+import grass.script as gs  # noqa: E402
 
-    wavelengths = (data.get('bands') or {}).get('wavelength')
-    return [float(w) for w in wavelengths] if wavelengths else None
+if not hasattr(builtins, "_"):  # no GRASS translation catalogue (libras3d)
+    builtins._ = str
 
+CHANNELS = {
+    "rgb": ("red", "green", "blue"),
+    "cmyk": ("cyan", "magenta", "yellow", "key"),
+}
 
-def get_band_wavelengths(raster3d):
-    """Extract wavelength metadata from Raster3D history via r3.info -h.
+# Dichromacy simulation matrices (rows: output red, green, blue).
+COLORBLIND = {
+    "protanopia": ((0.567, 0.433, 0), (0.558, 0.442, 0), (0, 0.242, 0.758)),
+    "deuteranopia": ((0.625, 0.375, 0), (0.7, 0.3, 0), (0, 0.3, 0.7)),
+    "tritanopia": ((0.95, 0.05, 0), (0, 0.433, 0.567), (0, 0.475, 0.525)),
+}
 
-    Parses lines of the form 'Band N: WL nm' written by i.hyper.atcorr
-    and i.hyper.import into the map's history file.
-    """
-    json_wl = _load_hyper_json_wavelengths(raster3d)
-    if json_wl:
-        return {float(wl): i + 1 for i, wl in enumerate(json_wl)}
-
-    if _RAS3D:
-        import json as _json
-        for _sfx in ('', '.tif', '.tiff', '.h5', '.hdf5'):
-            _base = raster3d.removesuffix(_sfx) if raster3d.endswith(_sfx) else raster3d
-            _wlp = _base + '.wl.json'
-            if _os.path.exists(_wlp):
-                with open(_wlp) as _f:
-                    _wl = _json.load(_f)
-                _wl_nm = [w * 1000 if w < 10 else w for w in _wl]
-                return {float(wl): i + 1 for i, wl in enumerate(_wl_nm)}
-        import ras3d as _r3
-        _h = _r3.open_cube(raster3d); _r = _r3.get_region(_h); _r3.close_cube(_h)
-        return {float(i): i for i in range(1, _r['depths'] + 1)}
-    try:
-        header = gs.read_command('r3.info', map=raster3d, flags='h')
-    except Exception as e:
-        gs.fatal(f"Cannot read r3.info for {raster3d}: {e}")
-
-    wavelengths = {}
-    for line in header.splitlines():
-        m = re.match(r'\s*Band\s+(\d+):\s+([\d.]+)\s*nm', line)
-        if m:
-            band_num = int(m.group(1))
-            wl_nm = float(m.group(2))
-            wavelengths[wl_nm] = band_num
-
-    if not wavelengths:
-        gs.warning("No wavelength metadata found in r3.info -h. "
-                   "Using band numbers as wavelengths.")
-        info = gs.parse_command('r3.info', map=raster3d, flags='g')
-        depths = int(info['depths'])
-        wavelengths = {float(i): i for i in range(1, depths + 1)}
-
-    return wavelengths
+R_SERIES = {
+    "mean": "average",
+    "median": "median",
+    "mode": "mode",
+    "min": "minimum",
+    "max": "maximum",
+}
 
 
-def find_closest_band(target_wavelength, wavelengths):
-    """Find the band closest to target wavelength"""
-    closest_wl = min(wavelengths.keys(), key=lambda x: abs(x - target_wavelength))
-    return wavelengths[closest_wl], closest_wl
+def select_bands(target, bandwidth, wavelengths):
+    """Indices of the valid bands of a channel: within bandwidth / 2 of the
+    target, or the nearest one when bandwidth is 0."""
+    wavelengths = np.asarray(wavelengths, dtype=float)
+    if bandwidth > 0:
+        inside = np.flatnonzero(np.abs(wavelengths - target) <= bandwidth / 2)
+        if inside.size == 0:
+            gs.fatal(
+                _(
+                    "No valid band within {width} nm of {target} nm (bands "
+                    "{low:.1f}-{high:.1f} nm)"
+                ).format(
+                    width=bandwidth / 2,
+                    target=target,
+                    low=wavelengths.min(),
+                    high=wavelengths.max(),
+                )
+            )
+        return inside.tolist()
+    return [int(np.argmin(np.abs(wavelengths - target)))]
 
 
-def calculate_statistic(raster3d, band_indices, statistic):
-    """Calculate statistical composite from multiple bands"""
-    temp_maps = []
-    
-    for idx in band_indices:
-        band_name = f"{raster3d}#{idx}"
-        temp_maps.append(band_name)
-    
-    if statistic == "mean":
-        expr = f"({' + '.join(temp_maps)}) / {len(temp_maps)}"
-    elif statistic == "median":
-        # Use r.series for median
-        return temp_maps, "median"
-    elif statistic == "mode":
-        return temp_maps, "mode"
-    elif statistic == "min":
-        return temp_maps, "minimum"
-    elif statistic == "max":
-        return temp_maps, "maximum"
-    elif statistic.startswith("sd"):
-        # Standard deviation variants
-        return temp_maps, statistic
-    else:
-        gs.fatal(f"Unknown statistic: {statistic}")
-    
-    return expr, None
+def sd_factor(statistic):
+    """Signed number of standard deviations of the sd* statistics."""
+    return int(statistic[2]) * (1 if statistic.endswith("_pos") else -1)
 
 
-def apply_colorblind_adjustment(channels, colorblind_type):
-    """Apply colorblind-safe adjustments to RGB channels"""
-    adjustments = {
-        'protanopia': {  # Red-blind
-            'red': (0.567, 0.433, 0),
-            'green': (0.558, 0.442, 0),
-            'blue': (0, 0.242, 0.758)
-        },
-        'deuteranopia': {  # Green-blind
-            'red': (0.625, 0.375, 0),
-            'green': (0.7, 0.3, 0),
-            'blue': (0, 0.3, 0.7)
-        },
-        'tritanopia': {  # Blue-blind
-            'red': (0.95, 0.05, 0),
-            'green': (0, 0.433, 0.567),
-            'blue': (0, 0.475, 0.525)
-        }
-    }
-    
-    if colorblind_type not in adjustments:
-        return channels
-    
-    adj = adjustments[colorblind_type]
-    gs.message(f"Applying {colorblind_type} color adjustments...")
-    
-    # Apply transformation matrix
-    # This would require actual raster math operations
-    # For now, return original channels with warning
-    gs.warning(f"Colorblind adjustment for {colorblind_type} selected but requires post-processing")
-    
-    return channels
+class GrassBackend:
+    """Channels as 2D raster maps of the current mapset. The current region
+    must be the cube's (main() sets a temporary one)."""
+
+    def __init__(self, cube):
+        found = gs.find_file(cube, element="raster_3d")
+        if not found["name"]:
+            gs.fatal(_("3D raster map <{}> not found").format(cube))
+        self.cube = cube
+        self.name, self.mapset = found["name"], found["mapset"]
+        self.depths = int(gs.raster3d_info(cube)["depths"])
+        self.tmp = f"tmp_ihrgb_{uuid.uuid4().hex[:8]}"
+        self.temporary = []
+        self.slicer = self._load_slicer()
+
+    def wavelengths(self):
+        """Wavelengths and depth indices of the valid bands, from the i.hyper
+        metadata (i_hyper_lib.hyper_meta)."""
+        from grass.script.utils import get_lib_path
+
+        path = get_lib_path(modname="i_hyper_lib", libname="hyper_meta")
+        if not path:
+            gs.fatal(_("i_hyper_lib (i.hyper suite) is not installed"))
+        if path not in sys.path:
+            sys.path.append(path)
+        import hyper_meta
+
+        try:
+            meta = hyper_meta.HyperMetadata.load(self.name, self.mapset)
+            axis = meta.resolve_band_axis(self.depths)
+        except (OSError, ValueError) as error:
+            gs.fatal(
+                _("Cannot read the metadata of <{map}>: {error}").format(
+                    map=self.cube, error=error
+                )
+            )
+        wavelengths = axis.get("wavelengths")
+        if wavelengths is None:
+            gs.fatal(_("<{}> has no band wavelengths").format(self.cube))
+        valid = np.flatnonzero(axis["validity"])
+        depth = [int(axis["source_to_depth"][i]) for i in valid]
+        keep = [k for k, d in enumerate(depth) if d >= 0]
+        wavelengths = np.asarray(wavelengths, dtype=float)[valid][keep]
+        if np.isnan(wavelengths).any():
+            gs.fatal(_("<{}> has valid bands without wavelength").format(self.cube))
+        return wavelengths, [depth[k] for k in keep]
+
+    @staticmethod
+    def _load_slicer():
+        """Rast3d_extract_z_slice() of the GRASS raster3d library, which
+        reads the tiles of one depth once, when this GRASS has it (through
+        the grass.lib ctypes bindings); None otherwise."""
+        try:
+            import grass.lib.gis as libgis
+            import grass.lib.raster3d as libraster3d
+
+            slicer = libraster3d.Rast3d_extract_z_slice
+        except (ImportError, OSError, AttributeError):
+            gs.verbose(_("No Rast3d_extract_z_slice(): bands read with r3.to.rast"))
+            return None
+        libgis.G_gisinit("i.hyper.rgb")
+        gs.verbose(_("Bands read with Rast3d_extract_z_slice()"))
+        return slicer
+
+    def band(self, depth):
+        """Band at a depth (0-based) as a temporary 2D map."""
+        name = f"{self.tmp}_z{depth}"
+        if name in self.temporary:
+            return name
+        if self.slicer is not None:
+            ret = self.slicer(
+                self.name.encode(), self.mapset.encode(), depth, name.encode()
+            )
+            if ret != 0:
+                gs.fatal(
+                    _("Cannot extract band {band} of <{map}>").format(
+                        band=depth + 1, map=self.cube
+                    )
+                )
+        else:
+            # One depth of the cube's region: r3.to.rast reads only it.
+            gs.run_command("g.region", b=depth, t=depth + 1, tbres=1)
+            gs.run_command("r3.to.rast", input=self.cube, output=name, quiet=True)
+            gs.run_command("g.region", raster_3d=self.cube)
+            gs.run_command("g.rename", raster=(f"{name}_00001", name), quiet=True)
+        self.temporary.append(name)
+        return name
+
+    def combine(self, name, depths, statistic):
+        """Channel map name from the bands at depths."""
+        maps = [self.band(d) for d in depths]
+        if len(maps) == 1:
+            gs.mapcalc(f"{name} = {maps[0]}", quiet=True)
+        elif statistic in R_SERIES:
+            gs.run_command(
+                "r.series",
+                input=maps,
+                output=name,
+                method=R_SERIES[statistic],
+                quiet=True,
+            )
+        else:
+            mean, sd = f"{self.tmp}_mean", f"{self.tmp}_sd"
+            gs.run_command(
+                "r.series",
+                input=maps,
+                output=(mean, sd),
+                method=("average", "stddev"),
+                overwrite=True,
+                quiet=True,
+            )
+            self.temporary += [mean, sd]
+            gs.mapcalc(f"{name} = {mean} + ({sd_factor(statistic)}) * {sd}", quiet=True)
+
+    def rescale(self, name):
+        """Linear rescaling of a channel to 0-255."""
+        info = gs.raster_info(name)
+        low, high = info["min"], info["max"]
+        if low is None or high is None or not high > low:
+            gs.fatal(_("Channel <{}> is constant: cannot rescale it").format(name))
+        tmp = f"{self.tmp}_rescale"
+        gs.mapcalc(f"{tmp} = 255.0 * ({name} - {low}) / ({high} - {low})", quiet=True)
+        gs.run_command("g.rename", raster=(tmp, name), overwrite=True, quiet=True)
+
+    def mix(self, names, matrix):
+        """Replace the channels by their mix with a 3 x 3 matrix."""
+        tmp = [f"{self.tmp}_mix{k}" for k in range(3)]
+        for out, row in zip(tmp, matrix):
+            expr = " + ".join(f"{w} * {n}" for w, n in zip(row, names) if w)
+            gs.mapcalc(f"{out} = {expr}", quiet=True)
+        for out, name in zip(tmp, names):
+            gs.run_command("g.rename", raster=(out, name), overwrite=True, quiet=True)
+
+    def finish(self, names, group, description):
+        for name in names:
+            gs.run_command("r.support", map=name, title=description[name])
+            gs.raster_history(name, overwrite=True)
+        gs.run_command("i.group", group=group, subgroup=group, input=names)
+        gs.message(_("Image group <{}> created").format(group))
+
+    def cleanup(self):
+        if self.temporary:
+            gs.run_command(
+                "g.remove", type="raster", name=self.temporary, flags="f", quiet=True
+            )
 
 
-def create_rgb_composite(options, flags):
-    """Create RGB composite from hyperspectral data"""
-    input_raster = options['input']
-    output_base = options['output']
-    statistic = options['statistic']
-    colorblind = options['colorblind']
-    normalize = flags['n']
-    
-    # Get wavelengths
-    wavelengths = get_band_wavelengths(input_raster)
-    gs.message(f"Found {len(wavelengths)} wavelength bands")
-    
-    # Find bands for RGB
-    red_wl = float(options['red_wavelength'])
-    green_wl = float(options['green_wavelength'])
-    blue_wl = float(options['blue_wavelength'])
-    
-    red_band, actual_red = find_closest_band(red_wl, wavelengths)
-    green_band, actual_green = find_closest_band(green_wl, wavelengths)
-    blue_band, actual_blue = find_closest_band(blue_wl, wavelengths)
-    
-    gs.message(f"Selected bands - R: {actual_red}nm (band {red_band}), "
-               f"G: {actual_green}nm (band {green_band}), "
-               f"B: {actual_blue}nm (band {blue_band})")
-    
-    # Create output rasters for each channel
-    channels = {'red': red_band, 'green': green_band, 'blue': blue_band}
-    output_maps = []
-    
-    for color, band in channels.items():
-        output_map = f"{output_base}_{color}"
+class Ras3dBackend:
+    """Without GRASS: channels as arrays, written as GeoTIFF files to
+    $RAS3D_OUTDIR by libras3d."""
 
-        gs.message(f"Creating {color} channel: {output_map}")
+    def __init__(self, cube):
+        import ras3d
 
-        extract_z_slice(input_raster, band, output_map)
+        self.ras3d = ras3d
+        self.cube = cube
+        self.handle = ras3d.open_cube(cube)
+        self.depths = ras3d.get_region(self.handle)["depths"]
+        self.arrays = {}
+        self.bands = {}
 
-        # Normalize if requested
-        if normalize:
-            gs.run_command('r.rescale', input=output_map, output=output_map,
-                          to='0,255', overwrite=True, quiet=True)
+    def wavelengths(self):
+        """Wavelengths from the <cube>.wl.json sidecar (µm or nm)."""
+        path = os.path.splitext(self.cube)[0] + ".wl.json"
+        if not os.path.exists(path):
+            gs.fatal(_("No wavelength sidecar {} for the cube").format(path))
+        with open(path, encoding="utf-8") as stream:
+            values = [float(w) for w in json.load(stream)]
+        if len(values) != self.depths:
+            gs.fatal(
+                _("{path} has {n} wavelengths for {depths} bands").format(
+                    path=path, n=len(values), depths=self.depths
+                )
+            )
+        nm = np.array([w * 1000 if w < 10 else w for w in values])
+        return nm, list(range(self.depths))
 
-        output_maps.append(output_map)
+    def band(self, depth):
+        if depth not in self.bands:
+            self.bands[depth] = self.ras3d.get_band(self.handle, depth).astype(
+                np.float64
+            )
+        return self.bands[depth]
 
-    # Apply colorblind adjustments if requested
-    if colorblind != 'none':
-        apply_colorblind_adjustment(output_maps, colorblind)
+    def combine(self, name, depths, statistic):
+        stack = np.stack([self.band(d) for d in depths])
+        if len(depths) == 1:
+            out = stack[0]
+        elif statistic == "mean":
+            out = np.nanmean(stack, axis=0)
+        elif statistic == "median":
+            out = np.nanmedian(stack, axis=0)
+        elif statistic == "min":
+            out = np.nanmin(stack, axis=0)
+        elif statistic == "max":
+            out = np.nanmax(stack, axis=0)
+        elif statistic == "mode":
+            out = np.apply_along_axis(
+                lambda v: np.unique(v, return_counts=True)[0][
+                    np.argmax(np.unique(v, return_counts=True)[1])
+                ],
+                0,
+                stack,
+            )
+        else:
+            out = np.nanmean(stack, axis=0) + sd_factor(statistic) * np.nanstd(
+                stack, axis=0
+            )
+        self.arrays[name] = out
 
-    # Create image group
-    group_name = f"{output_base}_rgb"
-    gs.run_command('i.group', group=group_name, subgroup=group_name,
-                  input=','.join(output_maps))
-    
-    gs.message(f"Created RGB image group: {group_name}")
-    gs.message(f"Individual bands: {', '.join(output_maps)}")
+    def rescale(self, name):
+        a = self.arrays[name]
+        low, high = np.nanmin(a), np.nanmax(a)
+        if not high > low:
+            gs.fatal(_("Channel {} is constant: cannot rescale it").format(name))
+        self.arrays[name] = 255.0 * (a - low) / (high - low)
 
+    def mix(self, names, matrix):
+        old = [self.arrays[n] for n in names]
+        for name, row in zip(names, matrix):
+            self.arrays[name] = sum(w * a for w, a in zip(row, old))
 
-def create_cmyk_composite(options, flags):
-    """Create CMYK composite from hyperspectral data"""
-    input_raster = options['input']
-    output_base = options['output']
-    statistic = options['statistic']
-    normalize = flags['n']
-    
-    # Get wavelengths
-    wavelengths = get_band_wavelengths(input_raster)
-    gs.message(f"Found {len(wavelengths)} wavelength bands")
-    
-    # Find bands for CMYK
-    cyan_wl = float(options['cyan_wavelength'])
-    magenta_wl = float(options['magenta_wavelength'])
-    yellow_wl = float(options['yellow_wavelength'])
-    key_wl = float(options['key_wavelength'])
-    
-    cyan_band, actual_cyan = find_closest_band(cyan_wl, wavelengths)
-    magenta_band, actual_magenta = find_closest_band(magenta_wl, wavelengths)
-    yellow_band, actual_yellow = find_closest_band(yellow_wl, wavelengths)
-    key_band, actual_key = find_closest_band(key_wl, wavelengths)
-    
-    gs.message(f"Selected bands - C: {actual_cyan}nm (band {cyan_band}), "
-               f"M: {actual_magenta}nm (band {magenta_band}), "
-               f"Y: {actual_yellow}nm (band {yellow_band}), "
-               f"K: {actual_key}nm (band {key_band})")
-    
-    # Create output rasters for each channel
-    channels = {
-        'cyan': cyan_band,
-        'magenta': magenta_band,
-        'yellow': yellow_band,
-        'key': key_band
-    }
-    output_maps = []
-    
-    for color, band in channels.items():
-        output_map = f"{output_base}_{color}"
+    def finish(self, names, group, description):
+        import ras3d_write
 
-        gs.message(f"Creating {color} channel: {output_map}")
+        for name in names:
+            path = ras3d_write.outpath(name)
+            ras3d_write.write_raster2d(
+                path, self.arrays[name].astype(np.float32), self.handle
+            )
+            gs.message(_("{name}: {path}").format(name=description[name], path=path))
 
-        extract_z_slice(input_raster, band, output_map)
-
-        # Normalize if requested
-        if normalize:
-            gs.run_command('r.rescale', input=output_map, output=output_map,
-                          to='0,255', overwrite=True, quiet=True)
-
-        output_maps.append(output_map)
-
-    # Create image group
-    group_name = f"{output_base}_cmyk"
-    gs.run_command('i.group', group=group_name, subgroup=group_name,
-                  input=','.join(output_maps))
-    
-    gs.message(f"Created CMYK image group: {group_name}")
-    gs.message(f"Individual bands: {', '.join(output_maps)}")
+    def cleanup(self):
+        self.ras3d.close_cube(self.handle)
 
 
 def main(options, flags):
-    """Main function"""
-    colorspace = options['colorspace']
-    
-    gs.message(f"Creating {colorspace.upper()} composite...")
-    
-    if colorspace == 'rgb':
-        create_rgb_composite(options, flags)
-    elif colorspace == 'cmyk':
-        create_cmyk_composite(options, flags)
+    space = options["colorspace"]
+    bandwidth = float(options["bandwidth"])
+    statistic = options["statistic"]
+    colorblind = options["colorblind"]
+    if bandwidth < 0:
+        gs.fatal(_("bandwidth must be 0 or more"))
+    if colorblind != "none" and space != "rgb":
+        gs.fatal(_("colorblind= applies to colorspace=rgb only"))
+
+    if RAS3D:
+        backend = Ras3dBackend(options["input"])
     else:
-        gs.fatal(f"Unknown colorspace: {colorspace}")
-    
-    gs.message("Composite creation complete!")
+        # The cube's region, for its bands and the channel maps.
+        gs.use_temp_region()
+        gs.run_command("g.region", raster_3d=options["input"])
+        backend = GrassBackend(options["input"])
+    try:
+        wavelengths, depths = backend.wavelengths()
+        gs.verbose(_("{} valid bands").format(len(wavelengths)))
+        names, description = [], {}
+        for channel in CHANNELS[space]:
+            target = float(options[f"{channel}_wavelength"])
+            chosen = select_bands(target, bandwidth, wavelengths)
+            name = f"{options['output']}_{channel}"
+            backend.combine(name, [depths[k] for k in chosen], statistic)
+            if len(chosen) == 1:
+                description[name] = _("{channel} channel: {wave:.1f} nm").format(
+                    channel=channel, wave=wavelengths[chosen[0]]
+                )
+            else:
+                description[name] = _(
+                    "{channel} channel: {statistic} of {n} bands, "
+                    "{low:.1f}-{high:.1f} nm"
+                ).format(
+                    channel=channel,
+                    statistic=statistic,
+                    n=len(chosen),
+                    low=wavelengths[chosen[0]],
+                    high=wavelengths[chosen[-1]],
+                )
+            gs.message(description[name])
+            names.append(name)
+        if flags["n"]:
+            for name in names:
+                backend.rescale(name)
+        if colorblind != "none":
+            backend.mix(names, COLORBLIND[colorblind])
+            gs.message(_("Channels mixed for {}").format(colorblind))
+        backend.finish(names, f"{options['output']}_{space}", description)
+    finally:
+        backend.cleanup()
 
 
 if __name__ == "__main__":
-    options, flags = gs.parser()
-    sys.exit(main(options, flags))
+    sys.exit(main(*gs.parser()))

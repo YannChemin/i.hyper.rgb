@@ -7,197 +7,104 @@
 <body>
 
 <h2>DESCRIPTION</h2>
-
-<p><em>i.hyper.rgb</em> creates RGB or CMYK composites from hyperspectral imagery
-imported as 3D raster maps (<code>raster_3d</code>) by
-<a href="i.hyper.import.html">i.hyper.import</a>.</p>
-
-<p>The module reads wavelength metadata from hyperspectral 3D raster bands
-and automatically selects the bands closest to specified target
-wavelengths for each color channel. Users can choose between RGB
-(red-green-blue) and CMYK (cyan-magenta-yellow-key) color spaces.</p>
-
-<p><em>i.hyper.rgb</em> is part of the <b>i.hyper</b> module family designed for
-hyperspectral data import, processing, and analysis in GRASS. It
-complements <a href="i.hyper.composite.html">i.hyper.composite</a> by providing
-color space conversions with advanced statistical band selection and
-accessibility features.</p>
-
-<p>The module offers multiple statistical methods for band selection when
-multiple bands fall within the target wavelength range:</p>
-
+<p><em>i.hyper.rgb</em> creates RGB or CMYK composites from a hyperspectral 3D
+raster map (<code>raster_3d</code>) of the <em>i.hyper</em> module family. Each colour
+channel is made from the band nearest to the channel's wavelength, or
+from a statistic of the bands within a window around it.</p>
+<p>The band wavelengths and their validity come from the map's <em>i.hyper</em>
+metadata (<code>hyper.json</code>, read with the <em>i.hyper</em> library <code>i_hyper_lib</code>),
+as written by <a href="i.hyper.import.html">i.hyper.import</a>,
+<a href="i.hyper.preproc.html">i.hyper.preproc</a> or
+<a href="i.hyper.metadata.html">i.hyper.metadata</a>. Bands marked invalid (water
+absorption bands, for example) are never used. A map without this
+metadata is refused.</p>
+<p>With <strong>bandwidth</strong> 0 (the default), each channel is the valid band
+nearest to its wavelength. With a <strong>bandwidth</strong> in nm, each channel
+combines all the valid bands within half the bandwidth on either side of
+its wavelength, with the <strong>statistic</strong>:</p>
 <ul>
-  <li><b>mean</b> : Average of candidate bands</li>
-  <li><b>median</b> : Median value of candidate bands</li>
-  <li><b>mode</b> : Most frequent value of candidate bands</li>
-  <li><b>min</b> : Minimum value of candidate bands</li>
-  <li><b>max</b> : Maximum value of candidate bands</li>
-  <li><b>sd1_pos, sd2_pos, sd3_pos</b> : Mean plus 1, 2, or 3 standard deviations</li>
-  <li><b>sd1_neg, sd2_neg, sd3_neg</b> : Mean minus 1, 2, or 3 standard deviations</li>
+<li><strong>mean</strong>, <strong>median</strong>, <strong>mode</strong> (most frequent value), <strong>min</strong>,
+  <strong>max</strong> of the bands;</li>
+<li><strong>sd1_pos</strong>, <strong>sd2_pos</strong>, <strong>sd3_pos</strong>: the mean plus 1, 2 or 3
+  standard deviations of the bands;</li>
+<li><strong>sd1_neg</strong>, <strong>sd2_neg</strong>, <strong>sd3_neg</strong>: the mean minus 1, 2 or 3
+  standard deviations.</li>
 </ul>
-
-<p>Color blind safe palette adjustments are available for protanopia
-(red-blind), deuteranopia (green-blind), and tritanopia (blue-blind)
-vision deficiencies, improving accessibility of hyperspectral
-visualizations.</p>
-
-<p>The resulting output consists of individual raster maps for each color
-channel (e.g., <code>output_red</code>, <code>output_green</code>, <code>output_blue</code>) organized
-into an image group (<code>output_rgb</code> or <code>output_cmyk</code>) for convenient
-display and further processing.</p>
-
+<p>A channel without any valid band in its window is an error.</p>
+<p>The <strong>-n</strong> flag rescales each channel linearly to 0-255 (its minimum to
+0, its maximum to 255). Without it, the channels keep the cube's values
+(radiance or reflectance).</p>
+<p>With <strong>colorblind</strong> (RGB only), the three channels are mixed with the
+dichromacy simulation matrix of protanopia, deuteranopia or tritanopia
+(Viénot et al. 1999): the composite then shows how it appears with that
+colour vision deficiency, so that a map can be checked for readability.
+Use it with <strong>-n</strong>, so that the channels have the same scale.</p>
+<p>The output is one raster map per channel (<code>&lt;output&gt;_red</code>, <code>_green</code>,
+<code>_blue</code>, or <code>_cyan</code>, <code>_magenta</code>, <code>_yellow</code>, <code>_key</code>), titled with the
+wavelengths used, and an image group of them (<code>&lt;output&gt;_rgb</code> or
+<code>&lt;output&gt;_cmyk</code>).</p>
 <h2>NOTES</h2>
-
-<p>Band extraction uses <code>Rast3d_extract_z_slice()</code> from
-<code>libgrass_raster3d</code>, called via ctypes. The 3D map is opened with
-<code>RASTER3D_NO_CACHE</code>, which forces <code>Rast3d_get_block()</code> into the
-tile-bulk path: all tiles at the target depth level are read in a single
-pass, each exactly once, instead of spawning <em>r3.to.rast</em> and
-manipulating the computational region for every channel.</p>
-
-<p>The module expects input data to be a 3D raster map created by
-<em>i.hyper.import</em> or any 3D raster with wavelength metadata stored in
-band-level metadata following the <em>i.hyper</em> standard format:
-<b>wavelength</b>, <b>FWHM</b>, <b>valid</b>, and <b>unit</b>.</p>
-
-<p>When wavelength metadata is not found, the module falls back to using
-band indices as wavelength values, which may produce unexpected results.
-It is recommended to use properly imported hyperspectral data.</p>
-
-<p>The <b>-n</b> flag normalizes output bands to the 0-255 range, suitable for
-8-bit display formats. Without normalization, output bands retain their
-original reflectance or radiance values.</p>
-
-<p>Default wavelengths are chosen to match typical RGB color perception:</p>
-
+<p>The bands are read one depth at a time, never the whole cube. When the
+GRASS raster3d library provides <code>Rast3d_extract_z_slice()</code> (reached
+through the <code>grass.lib.raster3d</code> bindings), each band is read with it:
+the tiles of that depth are read once, in bulk. Otherwise, each band is
+extracted by <em>r3.to.rast</em> from a temporary 3D region limited to that
+depth. Both give the same maps. The computational region of the session
+is left unchanged.</p>
+<p>Without GRASS (no <code>GISBASE</code>), when the
+<a href="https://github.com/yannchemin/libras3d">libras3d</a> Python package is
+installed, the module runs on a GeoTIFF or HDF5 cube file instead
+(<code>input=&lt;file&gt;</code>). The wavelengths then come from the <code>&lt;cube&gt;.wl.json</code>
+sidecar (in µm or nm), every band is valid, and each channel is written
+as a GeoTIFF file to <code>$RAS3D_OUTDIR</code>; no image group is made.</p>
+<p>Default wavelengths:</p>
 <ul>
-  <li><b>Red</b>: 650 nm</li>
-  <li><b>Green</b>: 550 nm</li>
-  <li><b>Blue</b>: 450 nm</li>
+<li><strong>Red</strong> 650 nm, <strong>green</strong> 550 nm, <strong>blue</strong> 450 nm.</li>
+<li><strong>Cyan</strong> 490 nm, <strong>magenta</strong> 580 nm, <strong>yellow</strong> 570 nm, <strong>key
+  (black)</strong> 800 nm (near-infrared, for contrast).</li>
 </ul>
-
-<p>For CMYK composites:</p>
-
-<ul>
-  <li><b>Cyan</b>: 490 nm</li>
-  <li><b>Magenta</b>: 580 nm</li>
-  <li><b>Yellow</b>: 570 nm</li>
-  <li><b>Key (black)</b>: 800 nm (near-infrared for contrast)</li>
-</ul>
-
-<p>These defaults can be customized using the wavelength options to match
-specific sensor characteristics or visualization needs.</p>
-
-<p>Color blind adjustments apply transformation matrices to the output
-channels, simulating how the composite would appear to individuals with
-different types of color vision deficiency. This feature helps ensure
-that visualizations convey information effectively to all viewers.</p>
-
 <h2>EXAMPLES</h2>
-
-<div class="code"><pre>
-# Create a standard RGB composite from PRISMA data
-i.hyper.rgb input=prisma \
-            output=prisma_composite \
-            colorspace=rgb \
-            statistic=mean
-
-# Result: prisma_composite_red, prisma_composite_green, prisma_composite_blue
-# Image group: prisma_composite_rgb
-</pre></div>
-
-<div class="code"><pre>
-# Create a normalized RGB composite suitable for display
-i.hyper.rgb input=enmap \
-            output=enmap_display \
-            colorspace=rgb \
-            statistic=mean \
-            -n
-
-# Display the composite
-d.rgb red=enmap_display_red \
-      green=enmap_display_green \
-      blue=enmap_display_blue
-</pre></div>
-
-<div class="code"><pre>
-# Create a deuteranopia-adjusted RGB composite
-# Useful for ensuring visualization accessibility
-i.hyper.rgb input=tanager \
-            output=tanager_colorblind \
-            colorspace=rgb \
-            statistic=median \
-            colorblind=deuteranopia \
-            -n
-</pre></div>
-
-<div class="code"><pre>
-# Create CMYK composite with custom wavelengths
-i.hyper.rgb input=prisma \
-            output=prisma_cmyk \
-            colorspace=cmyk \
-            cyan_wavelength=480 \
-            magenta_wavelength=590 \
-            yellow_wavelength=560 \
-            key_wavelength=850 \
-            statistic=mean
-</pre></div>
-
-<div class="code"><pre>
-# Use standard deviation for enhanced contrast
-i.hyper.rgb input=enmap \
-            output=enmap_enhanced \
-            colorspace=rgb \
-            statistic=sd2_pos \
-            red_wavelength=660 \
-            green_wavelength=560 \
-            blue_wavelength=470 \
-            -n
-</pre></div>
-
-<div class="code"><pre>
-# Create multiple versions for comparison
-# Standard RGB
-i.hyper.rgb input=hyperspectral output=standard colorspace=rgb -n
-
-# Protanopia-adjusted
-i.hyper.rgb input=hyperspectral output=protanopia colorspace=rgb \
-            colorblind=protanopia -n
-
-# Tritanopia-adjusted
-i.hyper.rgb input=hyperspectral output=tritanopia colorspace=rgb \
-            colorblind=tritanopia -n
-</pre></div>
-
+<p>A true-colour composite of the nearest bands, rescaled for display:</p>
+<pre><code class="language-sh">i.hyper.rgb input=enmap output=enmap_display -n
+d.rgb red=enmap_display_red green=enmap_display_green \
+    blue=enmap_display_blue
+</code></pre>
+<p>Each channel the mean of the bands within 20 nm of its wavelength, with
+custom wavelengths:</p>
+<pre><code class="language-sh">i.hyper.rgb input=prisma output=prisma_mean bandwidth=40 statistic=mean \
+    red_wavelength=660 green_wavelength=560 blue_wavelength=470
+</code></pre>
+<p>The same composite as seen with deuteranopia:</p>
+<pre><code class="language-sh">i.hyper.rgb input=tanager output=tanager_deuteranopia -n \
+    colorblind=deuteranopia
+</code></pre>
+<p>A CMYK composite with custom wavelengths:</p>
+<pre><code class="language-sh">i.hyper.rgb input=prisma output=prisma_cmyk colorspace=cmyk \
+    cyan_wavelength=480 magenta_wavelength=590 yellow_wavelength=560 \
+    key_wavelength=850
+</code></pre>
+<p>Without GRASS, on a GeoTIFF cube with libras3d:</p>
+<pre><code class="language-sh">RAS3D_OUTDIR=/tmp/out i.hyper.rgb input=/data/wyvern.tif output=wyvern
+</code></pre>
 <h2>SEE ALSO</h2>
-
-<a href="i.hyper.import.html">i.hyper.import</a>,
-<a href="i.hyper.composite.html">i.hyper.composite</a>,
-<a href="i.hyper.preproc.html">i.hyper.preproc</a>,
+<p><em><a href="i.hyper.composite.html">i.hyper.composite</a>,
 <a href="i.hyper.explore.html">i.hyper.explore</a>,
 <a href="i.hyper.export.html">i.hyper.export</a>,
+<a href="i.hyper.import.html">i.hyper.import</a>,
+<a href="i.hyper.metadata.html">i.hyper.metadata</a>,
+<a href="i.hyper.preproc.html">i.hyper.preproc</a>,
 <a href="https://grass.osgeo.org/grass-stable/manuals/d.rgb.html">d.rgb</a>,
 <a href="https://grass.osgeo.org/grass-stable/manuals/i.group.html">i.group</a>,
-<a href="https://grass.osgeo.org/grass-stable/manuals/r3.support.html">r3.support</a>,
-<a href="https://grass.osgeo.org/grass-stable/manuals/r.rescale.html">r.rescale</a>
-
+<a href="https://grass.osgeo.org/grass-stable/manuals/r3.to.rast.html">r3.to.rast</a></em></p>
 <h2>REFERENCES</h2>
-
 <ul>
-  <li>Viénot, F., Brettel, H., &amp; Mollon, J. D. (1999). Digital video
-    colourmaps for checking the legibility of displays by dichromats.
-    <em>Color Research &amp; Application</em>, 24(4), 243-252.</li>
-  <li>Machado, G. M., Oliveira, M. M., &amp; Fernandes, L. A. (2009). A
-    physiologically-based model for simulation of color vision deficiency.
-    <em>IEEE Transactions on Visualization and Computer Graphics</em>, 15(6),
-    1291-1298.</li>
+<li>Viénot, F., Brettel, H., &amp; Mollon, J. D. (1999). Digital video
+  colourmaps for checking the legibility of displays by dichromats.
+  <em>Color Research &amp; Application</em>, 24(4), 243-252.</li>
 </ul>
-
 <h2>AUTHORS</h2>
-
-<p>Created for the i.hyper module family</p>
-
-<p>Based on work by Alen Mangafić and Tomaž Žagar, Geodetic Institute of Slovenia</p>
+<p>Yann Chemin, after <em>i.hyper.composite</em> by Alen Mangafić and Tomaž Žagar,
+Geodetic Institute of Slovenia</p>
 
 </body>
 </html>
