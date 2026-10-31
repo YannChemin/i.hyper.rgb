@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from test_ras3d_common import (
     WYVERN_PATH, skip_without_ras3d, skip_without_wyvern,
     open_cube_checked, assert_band_valid, install_ras3d_shim, make_wl_sidecar,
+    remove_wl_sidecar,
 )
 
 
@@ -83,7 +84,7 @@ def test_composite_writes_geotiff(tmp_path):
         }
         module.main(options, {'n': False})
     finally:
-        os.unlink(sidecar)
+        remove_wl_sidecar(sidecar)
     for channel in ('red', 'green', 'blue'):
         out = tmp_path / f'rgbtest_{channel}.tif'
         assert out.exists(), f"Expected {out} to be written"
@@ -106,7 +107,7 @@ def test_wavelength_sidecar(tmp_path):
         waves, depths = backend.wavelengths()
         backend.cleanup()
     finally:
-        os.unlink(sidecar)
+        remove_wl_sidecar(sidecar)
     assert len(waves) == r['depths']
     assert list(waves) == wl_list
     assert depths == list(range(r['depths']))
